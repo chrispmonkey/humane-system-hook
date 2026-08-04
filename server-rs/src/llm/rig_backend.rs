@@ -12,7 +12,7 @@ use rig::completion::Prompt;
 use rig::completion::{CompletionResponse, PromptError};
 use rig::tool::Tool;
 use rig::OneOrMany;
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::config::ResolvedConfig;
 use crate::llm::ChatResult;
@@ -152,14 +152,29 @@ where
 
             let user_message = Message::User { content };
 
-            let raw_result = self
-                .agent
-                .prompt(user_message)
-                .with_history(history.clone())
-                .max_turns(self.max_tool_turns)
-                .with_tool_concurrency(self.tool_concurrency.max(1))
-                .with_hook(DeferredVisionHook)
-                .await;
+            let mut retried = false;
+            let raw_result = loop {
+                let result = self
+                    .agent
+                    .prompt(user_message.clone())
+                    .with_history(history.clone())
+                    .max_turns(self.max_tool_turns)
+                    .with_tool_concurrency(self.tool_concurrency.max(1))
+                    .with_hook(DeferredVisionHook)
+                    .await;
+
+                match result {
+                    Err(ref e) if !retried && is_retryable_send_error(e) => {
+                        retried = true;
+                        warn!(
+                            provider = self.provider_label,
+                            error = %strip_query_strings(&e.to_string()),
+                            "LLM request failed before reaching the server; retrying once"
+                        );
+                    }
+                    other => break other,
+                }
+            };
             let latency_ms = started.elapsed().as_millis();
 
             let result = match raw_result {
@@ -193,5 +208,72 @@ where
 
             result
         })
+    }
+}
+
+/// Check for a transport level error, denoting the request never reached the provider and may be retried
+fn is_retryable_send_error(error: &PromptError) -> bool {
+    if !matches!(error, PromptError::CompletionError(_)) {
+        return false;
+    }
+
+    let mut source = std::error::Error::source(error);
+    while let Some(inner) = source {
+        if let Some(e) = inner.downcast_ref::<reqwest::Error>() {
+            return (e.is_connect() || e.is_request()) && !e.is_timeout();
+        }
+
+        source = inner.source();
+    }
+
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig::completion::CompletionError;
+
+    /// Wrap a reqwest error the way rig's transport does, so the test
+    /// exercises the same source() chain `is_retryable_send_error` walks.
+    fn prompt_error_from(reqwest_err: reqwest::Error) -> PromptError {
+        PromptError::CompletionError(CompletionError::HttpError(
+            rig::http_client::Error::Instance(Box::new(reqwest_err)),
+        ))
+    }
+
+    #[tokio::test]
+    async fn retries_connect_class_errors() {
+        // Nothing listens on this loopback port, so send() fails at connect.
+        let reqwest_err = reqwest::Client::new()
+            .get("http://127.0.0.1:1/")
+            .send()
+            .await
+            .expect_err("connect to a closed port must fail");
+        assert!(is_retryable_send_error(&prompt_error_from(reqwest_err)));
+    }
+
+    #[test]
+    fn does_not_retry_response_class_errors() {
+        let status = PromptError::CompletionError(CompletionError::HttpError(
+            rig::http_client::Error::InvalidStatusCodeWithMessage(
+                http::StatusCode::TOO_MANY_REQUESTS,
+                "rate limited".to_string(),
+            ),
+        ));
+        assert!(!is_retryable_send_error(&status));
+
+        let provider =
+            PromptError::CompletionError(CompletionError::ProviderError("500".to_string()));
+        assert!(!is_retryable_send_error(&provider));
+    }
+
+    #[test]
+    fn does_not_retry_cancellation() {
+        let cancelled = PromptError::PromptCancelled {
+            chat_history: Vec::new(),
+            reason: DEFERRED_VISION_SENTINEL.to_string(),
+        };
+        assert!(!is_retryable_send_error(&cancelled));
     }
 }
