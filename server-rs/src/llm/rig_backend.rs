@@ -4,14 +4,11 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use reqwest::Client as HttpClient;
-use rig::agent::{Agent, AgentBuilder, HookAction, PromptHook};
-use rig::client::CompletionClient;
+use rig::agent::{Agent, AgentBuilder, AgentHook, CompletionResponseEvent, HookContext, ObservationAction};
+use rig::client::{AgentClientExt, CompletionClient};
 use rig::completion::message::{AssistantContent, ImageMediaType, Message, UserContent};
-use rig::completion::CompletionModel;
-use rig::completion::Prompt;
-use rig::completion::{CompletionResponse, PromptError};
+use rig::completion::{Prompt, PromptError};
 use rig::tool::Tool;
-use rig::OneOrMany;
 use tracing::{error, warn};
 
 use crate::config::ResolvedConfig;
@@ -34,16 +31,13 @@ const DEFERRED_VISION_SENTINEL: &str = "__HUMANE_DEFERRED_VISION__";
 #[derive(Clone)]
 struct DeferredVisionHook;
 
-impl<M> PromptHook<M> for DeferredVisionHook
-where
-    M: CompletionModel,
-{
+impl AgentHook for DeferredVisionHook {
     async fn on_completion_response(
         &self,
-        _prompt: &Message,
-        response: &CompletionResponse<M::Response>,
-    ) -> HookAction {
-        let selected_vision = response.choice.iter().any(|content| {
+        _ctx: &HookContext,
+        event: CompletionResponseEvent<'_>,
+    ) -> ObservationAction {
+        let selected_vision = event.content.iter().any(|content| {
             matches!(
                 content,
                 AssistantContent::ToolCall(call)
@@ -52,31 +46,23 @@ where
         });
 
         if selected_vision {
-            HookAction::terminate(DEFERRED_VISION_SENTINEL)
+            ObservationAction::stop(DEFERRED_VISION_SENTINEL.to_string())
         } else {
-            HookAction::cont()
+            ObservationAction::continue_run()
         }
     }
 }
 
 /// Shared LLM backend for providers
-pub struct RigBackend<M>
-where
-    M: CompletionModel + 'static,
-    (): PromptHook<M> + 'static,
-{
+pub struct RigBackend {
     provider_label: &'static str,
-    agent: Agent<M>,
+    agent: Agent,
     request_logger: LlmRequestLogger,
     max_tool_turns: usize,
     tool_concurrency: usize,
 }
 
-impl<M> RigBackend<M>
-where
-    M: CompletionModel + 'static,
-    (): PromptHook<M> + 'static,
-{
+impl RigBackend {
     pub async fn from_client<C, F>(
         provider_label: &'static str,
         client: C,
@@ -87,8 +73,9 @@ where
         customize_builder: F,
     ) -> Result<Arc<dyn LlmBackend>, Box<dyn std::error::Error + Send + Sync>>
     where
-        C: CompletionClient<CompletionModel = M>,
-        F: FnOnce(AgentBuilder<M>) -> AgentBuilder<M>,
+        C: CompletionClient,
+        <C as CompletionClient>::CompletionModel: 'static,
+        F: FnOnce(AgentBuilder) -> AgentBuilder,
     {
         let llm_config = &config.config.llm;
         let builder = customize_builder(
@@ -124,10 +111,7 @@ where
     }
 }
 
-impl<M> LlmBackend for RigBackend<M>
-where
-    M: CompletionModel + 'static,
-    (): PromptHook<M> + 'static,
+impl LlmBackend for RigBackend
 {
     fn chat<'a>(&'a self, request: LlmChatRequest) -> LlmFuture<'a> {
         Box::pin(async move {
@@ -137,17 +121,16 @@ where
             let started = Instant::now();
 
             let content = if let Some(image_bytes) = &request.image {
-                OneOrMany::many(vec![
+                vec![
                     UserContent::text(utterance.clone()),
                     UserContent::image_base64(
                         &base64::engine::general_purpose::STANDARD.encode(image_bytes),
                         Some(ImageMediaType::JPEG),
                         None,
                     ),
-                ])
-                .expect("non-empty content vec")
+                ]
             } else {
-                OneOrMany::one(UserContent::text(utterance.clone()))
+                vec![UserContent::text(utterance.clone())]
             };
 
             let user_message = Message::User { content };
@@ -157,10 +140,10 @@ where
                 let result = self
                     .agent
                     .prompt(user_message.clone())
-                    .with_history(history.clone())
+                    .history(history.clone())
                     .max_turns(self.max_tool_turns)
-                    .with_tool_concurrency(self.tool_concurrency.max(1))
-                    .with_hook(DeferredVisionHook)
+                    .tool_concurrency(self.tool_concurrency.max(1))
+                    .add_hook(DeferredVisionHook)
                     .await;
 
                 match result {
