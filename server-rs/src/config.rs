@@ -38,7 +38,7 @@ impl ResolvedConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, strum::VariantArray)]
 #[serde(rename_all = "lowercase")]
 pub enum LlmProvider {
     Echo,
@@ -58,6 +58,17 @@ impl LlmProvider {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
             Self::OpenAiCompatible => "openai-compatible",
+        }
+    }
+
+    /// Human-friendly name for the settings UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Echo => "Echo (no API)",
+            Self::Gemini => "Google Gemini",
+            Self::Anthropic => "Anthropic",
+            Self::OpenAi => "OpenAI",
+            Self::OpenAiCompatible => "OpenAI-compatible",
         }
     }
 }
