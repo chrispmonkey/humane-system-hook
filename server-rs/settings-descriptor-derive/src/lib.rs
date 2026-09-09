@@ -33,8 +33,10 @@ pub fn derive_settings_fields(input: TokenStream) -> TokenStream {
 
     let mut pushes = Vec::new();
     for field in &fields.named {
-        let Some(attr) = FieldAttr::parse(&field.attrs) else {
-            continue; // no #[setting] → not exposed
+        let attr = match FieldAttr::parse(&field.attrs) {
+            Ok(Some(attr)) => attr,
+            Ok(None) => continue, // no #[setting] → not exposed
+            Err(e) => return e.to_compile_error().into(),
         };
         let name = field.ident.as_ref().unwrap();
         let kind = match kind_expr(&attr, name, &field.ty, &rt) {
@@ -137,10 +139,14 @@ pub fn derive_settings_options(input: TokenStream) -> TokenStream {
     let mut options = Vec::new();
     for variant in &data.variants {
         let ident = &variant.ident;
-        let Some(attr) = FieldAttr::parse(&variant.attrs) else {
-            return syn::Error::new_spanned(ident, "each variant needs #[setting(label = \"…\")]")
-                .to_compile_error()
-                .into();
+        let attr = match FieldAttr::parse(&variant.attrs) {
+            Ok(Some(attr)) => attr,
+            Ok(None) => {
+                return syn::Error::new_spanned(ident, "each variant needs #[setting(label = \"…\")]")
+                    .to_compile_error()
+                    .into()
+            }
+            Err(e) => return e.to_compile_error().into(),
         };
         let label = attr.label;
         options.push(quote! {
@@ -170,9 +176,12 @@ struct FieldAttr {
 }
 
 impl FieldAttr {
-    /// Returns `None` when the item carries no `#[setting]` (i.e. not exposed).
-    fn parse(attrs: &[syn::Attribute]) -> Option<FieldAttr> {
-        let attr = attrs.iter().find(|a| a.path().is_ident("setting"))?;
+    /// `Ok(None)` when the item carries no `#[setting]` (i.e. not exposed);
+    /// `Err` when it has a malformed one.
+    fn parse(attrs: &[syn::Attribute]) -> syn::Result<Option<FieldAttr>> {
+        let Some(attr) = attrs.iter().find(|a| a.path().is_ident("setting")) else {
+            return Ok(None);
+        };
         let mut label = None;
         let mut kind = None;
         let mut get = None;
@@ -208,15 +217,11 @@ impl FieldAttr {
                 return Err(meta.error("unknown setting attribute"));
             }
             Ok(())
-        })
-        .expect("invalid #[setting(...)]");
+        })?;
 
-        Some(FieldAttr {
-            label: label.expect("#[setting] requires label = \"…\""),
-            kind,
-            get,
-            visible_when,
-        })
+        let label = label
+            .ok_or_else(|| syn::Error::new_spanned(attr, "#[setting] requires label = \"…\""))?;
+        Ok(Some(FieldAttr { label, kind, get, visible_when }))
     }
 }
 

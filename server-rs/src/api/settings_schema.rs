@@ -165,4 +165,66 @@ mod tests {
         let base_url = find_field(&schema, "llm.base_url");
         assert_eq!(base_url["visibleWhen"]["llm.provider"], "openai-compatible");
     }
+
+    /// Locks the whole derived descriptor: every section, every field, its key,
+    /// type, and label — so a config change or a wrong `#[setting]` can't quietly
+    /// alter what clients render.
+    #[test]
+    fn descriptor_matches_the_expected_inventory() {
+        let schema = descriptor(&default_config());
+        let got: Vec<(String, String, String)> = schema["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|s| {
+                let section = s["key"].as_str().unwrap().to_string();
+                s["fields"].as_array().unwrap().iter().map(move |f| {
+                    (
+                        section.clone(),
+                        f["key"].as_str().unwrap().to_string(),
+                        format!("{}:{}", f["type"].as_str().unwrap(), f["label"].as_str().unwrap()),
+                    )
+                })
+            })
+            .collect();
+
+        let expected = [
+            ("server", "server.system_prompt", "text:System Prompt"),
+            ("server", "server.status_prompt", "text:Status Prompt"),
+            ("server", "server.display_name", "string:Display Name"),
+            ("llm", "llm.provider", "enum:Provider"),
+            ("llm", "llm.model", "string:Model ID"),
+            ("llm", "llm.api_key", "secret:API Key"),
+            ("llm", "llm.base_url", "string:Base URL"),
+            ("llm", "llm.web_search", "bool:Provider web search"),
+            ("weather", "weather.pirate_weather_api_key", "secret:PirateWeather API Key"),
+            ("contacts", "contacts.trust_all_contacts", "bool:Trust all contacts"),
+            ("contacts", "contacts.allow_all_inbound", "bool:Allow all inbound calls and messages"),
+            ("dev", "dev.apk_install_enabled", "bool:Remote APK install"),
+        ];
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|(s, k, t)| (s.to_string(), k.to_string(), t.to_string()))
+            .collect();
+
+        assert_eq!(got, expected);
+    }
+
+    /// The prompt fields are backed by `get = "resolved_*"`, not the raw
+    /// `Option` — so they render the built-in prompt when unset, while a plain
+    /// optional field (display_name) renders empty.
+    #[test]
+    fn getter_backed_fields_render_resolved_values() {
+        let config = default_config();
+        let schema = descriptor(&config);
+
+        let system_prompt = find_field(&schema, "server.system_prompt");
+        assert_eq!(
+            system_prompt["value"].as_str().unwrap(),
+            config.server.resolved_system_prompt()
+        );
+        assert!(!system_prompt["value"].as_str().unwrap().is_empty());
+
+        assert_eq!(find_field(&schema, "server.display_name")["value"], "");
+    }
 }
