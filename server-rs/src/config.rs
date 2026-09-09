@@ -38,14 +38,22 @@ impl ResolvedConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, strum::VariantArray)]
+#[derive(
+    Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq,
+    settings_descriptor_derive::SettingsOptions,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum LlmProvider {
+    #[setting(label = "Echo (no API)")]
     Echo,
+    #[setting(label = "Google Gemini")]
     Gemini,
+    #[setting(label = "Anthropic")]
     Anthropic,
+    #[setting(label = "OpenAI")]
     OpenAi,
     #[serde(rename = "openai-compatible")]
+    #[setting(label = "OpenAI-compatible")]
     OpenAiCompatible,
 }
 
@@ -60,17 +68,6 @@ impl LlmProvider {
             Self::OpenAiCompatible => "openai-compatible",
         }
     }
-
-    /// Human-friendly name for the settings UI.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Echo => "Echo (no API)",
-            Self::Gemini => "Google Gemini",
-            Self::Anthropic => "Anthropic",
-            Self::OpenAi => "OpenAI",
-            Self::OpenAiCompatible => "OpenAI-compatible",
-        }
-    }
 }
 
 impl std::fmt::Display for LlmProvider {
@@ -79,24 +76,29 @@ impl std::fmt::Display for LlmProvider {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, settings_descriptor_derive::SettingsFields)]
 pub struct LlmConfig {
     /// Provider name: "gemini", "anthropic", "openai", "openai-compatible", "echo"
     #[serde(default = "default_provider")]
+    #[setting(label = "Provider", enumerated)]
     pub provider: LlmProvider,
 
     /// Model ID for the chosen provider (e.g. "gemini-2.5-flash")
     #[serde(default = "default_model")]
+    #[setting(label = "Model ID")]
     pub model: String,
 
     /// API key — overrides the corresponding env var if set.
+    #[setting(label = "API Key", secret)]
     pub api_key: Option<String>,
 
     /// Base URL — only used for "openai-compatible" provider.
+    #[setting(label = "Base URL", visible_when(field = "llm.provider", equals = "openai-compatible"))]
     pub base_url: Option<String>,
 
     /// Enable provider-hosted web search grounding (currently only Gemini and OpenAI)
     #[serde(default)]
+    #[setting(label = "Provider web search")]
     pub web_search: bool,
 
     /// Server-local native LLM tools.
@@ -158,7 +160,7 @@ pub struct LlmToolsConfig {
     pub tool_concurrency: usize,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, settings_descriptor_derive::SettingsFields)]
 pub struct ServerConfig {
     /// HTTP listen address for uploads and REST API.
     #[serde(default = "default_http_bind_addr")]
@@ -178,6 +180,7 @@ pub struct ServerConfig {
     /// `None` means use the current built-in default prompt. A concrete value
     /// is treated as user-customized and must not be empty.
     #[serde(default)]
+    #[setting(label = "System Prompt", text, get = "resolved_system_prompt")]
     pub system_prompt: Option<String>,
 
     /// Request status prompt template sent to the LLM after app-provided history.
@@ -185,9 +188,11 @@ pub struct ServerConfig {
     /// `None` means use the current built-in default prompt. A concrete value
     /// is treated as user-customized and must not be empty.
     #[serde(default)]
+    #[setting(label = "Status Prompt", text, get = "resolved_status_prompt")]
     pub status_prompt: Option<String>,
 
     /// Display name shown during onboarding welcome screen.
+    #[setting(label = "Display Name")]
     pub display_name: Option<String>,
 }
 
@@ -202,20 +207,23 @@ pub struct StorageConfig {
     pub db_path: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, settings_descriptor_derive::SettingsFields)]
 pub struct WeatherConfig {
     /// PirateWeather API key. If not set, weather requests return "unavailable".
+    #[setting(label = "PirateWeather API Key", secret)]
     pub pirate_weather_api_key: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default, settings_descriptor_derive::SettingsFields)]
 pub struct ContactsConfig {
     /// Treat all contacts/numbers as trusted at runtime.
     #[serde(default)]
+    #[setting(label = "Trust all contacts")]
     pub trust_all_contacts: bool,
 
     /// Allow all inbound calls/messages without requiring contact lookup.
     #[serde(default)]
+    #[setting(label = "Allow all inbound calls and messages")]
     pub allow_all_inbound: bool,
 }
 
@@ -234,10 +242,11 @@ pub struct LoggingConfig {
     pub max_files: usize,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default, settings_descriptor_derive::SettingsFields)]
 pub struct DevConfig {
     /// Enable remote APK installs.
     #[serde(default)]
+    #[setting(label = "Remote APK install")]
     pub apk_install_enabled: bool,
 }
 

@@ -8,10 +8,9 @@ use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
-use strum::VariantArray;
 
 use crate::api::ApiState;
-use crate::config::{Config, LlmProvider};
+use crate::config::Config;
 
 pub fn router() -> Router<ApiState> {
     Router::new().route("/api/settings/schema", get(get_schema))
@@ -20,6 +19,19 @@ pub fn router() -> Router<ApiState> {
 async fn get_schema(State(state): State<ApiState>) -> Json<Schema> {
     let config = state.shared_config.read().await;
     Json(describe(&config))
+}
+
+/// A config sub-struct that can list its settings fields — implemented by
+/// `#[derive(SettingsFields)]`, which reads each field's `#[setting(...)]`.
+pub(crate) trait SettingsFields {
+    fn settings_fields(&self, prefix: &str) -> Vec<Field>;
+}
+
+/// An enum that supplies its dropdown options and selected value — implemented
+/// by `#[derive(SettingsOptions)]`.
+pub(crate) trait SettingsOptions {
+    fn settings_options() -> Vec<EnumOption>;
+    fn settings_value(&self) -> &'static str;
 }
 
 #[derive(Serialize)]
@@ -35,20 +47,20 @@ struct Section {
 }
 
 #[derive(Serialize)]
-struct Field {
-    key: String,
-    label: &'static str,
+pub(crate) struct Field {
+    pub key: String,
+    pub label: &'static str,
     #[serde(flatten)]
-    kind: FieldKind,
+    pub kind: FieldKind,
     #[serde(rename = "visibleWhen", skip_serializing_if = "Option::is_none")]
-    visible_when: Option<BTreeMap<&'static str, &'static str>>,
+    pub visible_when: Option<BTreeMap<&'static str, &'static str>>,
 }
 
 /// The per-type payload; serde tags it as `type` and carries only that type's
 /// fields — a value for the scalars, `isSet` for a secret, options for an enum.
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-enum FieldKind {
+pub(crate) enum FieldKind {
     String { value: String },
     Text { value: String },
     Bool { value: bool },
@@ -63,75 +75,27 @@ enum FieldKind {
 }
 
 #[derive(Serialize)]
-struct EnumOption {
-    value: &'static str,
-    label: &'static str,
+pub(crate) struct EnumOption {
+    pub value: &'static str,
+    pub label: &'static str,
 }
 
+/// The user-facing sections, in display order. Each is one config sub-struct;
+/// the fields (and their keys, types, and values) come from its derive.
 fn describe(config: &Config) -> Schema {
     Schema {
         sections: vec![
-            section("server", "Server", vec![
-                field("display_name", "Display Name",
-                    FieldKind::String { value: config.server.display_name.clone().unwrap_or_default() }),
-                field("system_prompt", "System Prompt",
-                    FieldKind::Text { value: config.server.resolved_system_prompt() }),
-                field("status_prompt", "Status Prompt",
-                    FieldKind::Text { value: config.server.resolved_status_prompt() }),
-            ]),
-            section("llm", "LLM", vec![
-                field("provider", "Provider",
-                    FieldKind::Enum { value: config.llm.provider.as_str(), options: provider_options() }),
-                field("model", "Model ID", FieldKind::String { value: config.llm.model.clone() }),
-                field("api_key", "API Key", FieldKind::Secret { is_set: config.llm.api_key.is_some() }),
-                field("base_url", "Base URL",
-                    FieldKind::String { value: config.llm.base_url.clone().unwrap_or_default() })
-                    .visible_when("llm.provider", "openai-compatible"),
-                field("web_search", "Provider web search", FieldKind::Bool { value: config.llm.web_search }),
-            ]),
-            section("weather", "Weather", vec![
-                field("pirate_weather_api_key", "PirateWeather API Key",
-                    FieldKind::Secret { is_set: config.weather.pirate_weather_api_key.is_some() }),
-            ]),
-            section("contacts", "Contacts", vec![
-                field("trust_all_contacts", "Trust all contacts",
-                    FieldKind::Bool { value: config.contacts.trust_all_contacts }),
-                field("allow_all_inbound", "Allow all inbound calls and messages",
-                    FieldKind::Bool { value: config.contacts.allow_all_inbound }),
-            ]),
-            section("dev", "Developer", vec![
-                field("apk_install_enabled", "Remote APK install",
-                    FieldKind::Bool { value: config.dev.apk_install_enabled }),
-            ]),
+            section("server", "Server", &config.server),
+            section("llm", "LLM", &config.llm),
+            section("weather", "Weather", &config.weather),
+            section("contacts", "Contacts", &config.contacts),
+            section("dev", "Developer", &config.dev),
         ],
     }
 }
 
-/// Prefix each field's key with the section key, so the `server.display_name`
-/// config paths are joined here rather than spelled out per field.
-fn section(key: &'static str, label: &'static str, mut fields: Vec<Field>) -> Section {
-    for f in &mut fields {
-        f.key = format!("{key}.{}", f.key);
-    }
-    Section { key, label, fields }
-}
-
-fn field(name: &'static str, label: &'static str, kind: FieldKind) -> Field {
-    Field { key: name.to_string(), label, kind, visible_when: None }
-}
-
-impl Field {
-    fn visible_when(mut self, key: &'static str, value: &'static str) -> Field {
-        self.visible_when = Some(BTreeMap::from([(key, value)]));
-        self
-    }
-}
-
-fn provider_options() -> Vec<EnumOption> {
-    LlmProvider::VARIANTS
-        .iter()
-        .map(|p| EnumOption { value: p.as_str(), label: p.label() })
-        .collect()
+fn section(key: &'static str, label: &'static str, source: &impl SettingsFields) -> Section {
+    Section { key, label, fields: source.settings_fields(key) }
 }
 
 #[cfg(test)]

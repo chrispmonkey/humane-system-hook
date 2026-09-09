@@ -7,7 +7,7 @@
 mod contacts;
 mod dev;
 pub mod device;
-mod settings_schema;
+pub(crate) mod settings_schema;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
